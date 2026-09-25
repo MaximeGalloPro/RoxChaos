@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -85,9 +86,9 @@ def materialize_inputs(manifest: dict[str, Any], settings: Settings) -> list[Pat
             raise ValueError(f"Unsafe local source path: {destination}")
         separator = next(iter(separators))
         line_separator = next(iter(line_separators))
-        content = separator.join(captured_input["headers"])
-        content += line_separator
-        content += separator.join(captured_input["row"])
+        records = [separator.join(captured_input["headers"])]
+        records.extend(separator.join(row) for row in captured_input["rows"])
+        content = line_separator.join(records)
         if destination in planned and planned[destination] != content:
             raise ValueError(
                 f"Workflows provide conflicting inputs for {destination}"
@@ -133,7 +134,9 @@ def _capture_inputs(manifest: dict[str, Any], settings: Settings) -> None:
     if set(workflows_by_name) != set(settings.workflows):
         raise ValueError("Exported workflows do not match the requested workflows")
 
-    for name, workflow in workflows_by_name.items():
+    selected_identities: set[str] = set()
+    for name in settings.workflows:
+        workflow = workflows_by_name[name]
         local_sources = _local_sources(workflow)
         separators = {source["attributes"]["separator"] for source in local_sources}
         line_separators = {
@@ -147,20 +150,65 @@ def _capture_inputs(manifest: dict[str, Any], settings: Settings) -> None:
             raise FileNotFoundError(f"Input for {name} not found: {source_path}")
         separator = next(iter(separators))
         line_separator = next(iter(line_separators))
-        records = source_path.read_text(encoding="utf-8-sig").split(line_separator)
-        records = [record for record in records if record]
-        if len(records) < 2:
-            raise ValueError(f"Input for {name} has no data row")
-        headers = records[0].split(separator)
-        row = records[1].split(separator)
-        if len(headers) != len(row):
+        records = [
+            record
+            for record in source_path.read_text(encoding="utf-8-sig").split(
+                line_separator
+            )
+            if record
+        ]
+        if len(records) <= settings.input_rows:
             raise ValueError(
-                f"Input for {name} has {len(headers)} headers but {len(row)} values"
+                f"Input for {name} has fewer than {settings.input_rows} data rows"
+            )
+        headers = records[0].split(separator)
+        first_source = min(
+            (
+                task
+                for task in workflow["tasks"]
+                if task["specific_task"]["type"] == "RetrieverTask"
+                and task["specific_task"].get("local_source", {})["attributes"].get(
+                    "element_number"
+                )
+                is not None
+            ),
+            key=lambda task: task["attributes"]["step_order"],
+        )["specific_task"]["local_source"]["attributes"]
+        if first_source["element_number"] < settings.input_rows:
+            raise ValueError(
+                f"Workflow {name} reads fewer than {settings.input_rows} rows"
+            )
+        identity_columns = [
+            column.strip() for column in first_source["element_selector"].split("|")
+        ]
+        try:
+            identity_indexes = [headers.index(column) for column in identity_columns]
+        except ValueError as error:
+            raise ValueError(f"Input for {name} is missing an identity column") from error
+
+        selected_rows: list[list[str]] = []
+        identity_digests: list[str] = []
+        for record in records[1:]:
+            row = record.split(separator)
+            if len(headers) != len(row):
+                continue
+            identity = " ".join(row[index] for index in identity_indexes)
+            if not identity.strip() or identity in selected_identities:
+                continue
+            selected_identities.add(identity)
+            selected_rows.append(row)
+            identity_digests.append(hashlib.sha256(identity.encode()).hexdigest())
+            if len(selected_rows) == settings.input_rows:
+                break
+        if len(selected_rows) != settings.input_rows:
+            raise ValueError(
+                f"Input for {name} has fewer than {settings.input_rows} globally unique identities"
             )
         workflow["input"] = {
             "captured_from": source_path.name,
             "headers": headers,
-            "row": row,
+            "rows": selected_rows,
+            "identity_sha256": identity_digests,
         }
 
 

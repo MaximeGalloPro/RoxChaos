@@ -2,16 +2,16 @@
 
 External Docker chaos harness for the durable RoxIA, RoxAPI, and RoxTune workflow path.
 
-The harness captures the two workflows currently configured for organization `CD06`, rebuilds them without preserving database IDs, starts one input for each workflow in parallel, kills the inference worker, RoxAPI, and Solid Queue, then verifies recovery after restart.
+The harness captures the two workflows currently configured for organization `CD06`, rebuilds them without preserving database IDs, and lets the real Solid Queue recurrence start both workflows in parallel. It runs the RoxInference and RoxTrain `TimeScheduler` entrypoints, kills RoxInference, RoxAPI, and Solid Queue during inference, then verifies durable recovery and the following scheduler handoff to RoxTrain.
 
 ## Safety
 
 - The stack uses a Compose project in the `roxchaos` namespace, localhost-only ports `3180` and `8180`, dedicated Redis volumes, and databases whose names must start with `roxchaos_`.
 - Database reset is refused if either configured database name does not start with `roxchaos_`.
 - Existing `roxia`, `roxapi`, and `roxtune` containers and volumes are not stopped or removed.
-- The captured manifest contains one real local input row per workflow. The manifest, generated inputs, and detailed reports use mode `0600` and are ignored by Git.
+- The captured manifest contains three real local input rows per workflow by default. Their six workflow identities must be globally distinct. The manifest, generated inputs, and detailed reports use mode `0600` and are ignored by Git.
 - Teardown removes the dedicated MySQL databases, Compose resources, and generated input files. It refuses paths outside `RoxChaos/runtime` or directories without the RoxChaos ownership marker.
-- `roxtrain-worker` is intentionally excluded because training has no dry-run implementation.
+- The real RoxTrain scheduler and subprocess run against an empty training queue. No training job is submitted because training has no dry-run implementation.
 
 ## Setup
 
@@ -25,7 +25,7 @@ The default database settings target the MariaDB exposed on `host.docker.interna
 
 ## Capture
 
-The current RoxIA `web` container must be running. Capture the organization, all rule prompts/examples, both workflow task chains, and one input row per workflow:
+The current RoxIA `web` container must be running. Capture the organization, all rule prompts/examples, both workflow task chains, and three input rows per workflow:
 
 ```bash
 .venv/bin/roxchaos capture
@@ -39,6 +39,7 @@ The source files default to:
 ```
 
 Override `ROXCHAOS_NORMAL_INPUT` or `ROXCHAOS_AUDIT_INPUT` if those files move.
+Set `ROXCHAOS_INPUT_ROWS` to use more rows; the minimum is two.
 
 ## Run
 
@@ -46,7 +47,7 @@ Override `ROXCHAOS_NORMAL_INPUT` or `ROXCHAOS_AUDIT_INPUT` if those files move.
 .venv/bin/roxchaos run
 ```
 
-The command builds the three current branches, resets only the dedicated databases, loads the declarative manifest, and runs the pytest scenario. Set `ROXCHAOS_KEEP_STACK=1` to preserve failed containers for inspection.
+The command builds the current service branches, resets only the dedicated databases, loads the declarative manifest, and runs the pytest scenario. Set `ROXCHAOS_KEEP_STACK=1` to preserve failed containers for inspection. Set `ROXCHAOS_SKIP_BUILD=1` only when the required images have already been rebuilt.
 
 Generated reports:
 
@@ -65,8 +66,11 @@ Remove a preserved stack with:
 ## Recovery assertions
 
 - Both workflow runs finish with `completed`.
-- Each workflow commits exactly one `Analysis`.
-- Each workflow commits exactly 20 durable items, 9 external jobs, and 21 successful task logs for the captured configuration.
+- The `scheduled_tasks_scan` recurring execution invokes `ScheduledTasksJob`, which creates exactly one scheduled run and one `AsyncTaskJob` delivery per workflow and scheduled period.
+- Both parent schedulers publish fresh heartbeats. RoxTrain exhibits the expected heartbeat gap while its real subprocess runs; RoxInference keeps refreshing its heartbeat during its subprocess.
+- The shared lock begins absent, becomes present for the inference turn, then transitions `present -> absent -> present` across the following training turn.
+- Both real Redis Stream consumer groups are observed, while the RoxTrain queue remains empty.
+- Each workflow commits exactly 3 analyses, 60 durable items, 27 external jobs, and 61 successful task logs for the current three-row configuration.
 - The selected in-flight job is pending and has no result immediately after the worker crash.
 - No duplicate workflow item, successful task log, reference tag, or document log is committed.
 - RoxAPI exposes one successful result per stable job identity.

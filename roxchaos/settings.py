@@ -19,6 +19,7 @@ class Settings:
     organisation: str
     workflows: tuple[str, str]
     source_inputs: dict[str, Path]
+    input_rows: int
     api_url: str
     roxia_url: str
     timeout_seconds: int
@@ -64,11 +65,12 @@ class Settings:
                     "../RoxIA/documents/AUDIT_extract_TEST_TAB.output.csv",
                 ),
             },
+            input_rows=int(value("ROXCHAOS_INPUT_ROWS", "3")),
             api_url=value("ROXCHAOS_API_URL", f"http://127.0.0.1:{api_port}"),
             roxia_url=value(
                 "ROXCHAOS_ROXIA_URL", f"http://127.0.0.1:{roxia_port}"
             ),
-            timeout_seconds=int(value("ROXCHAOS_TIMEOUT_SECONDS", "480")),
+            timeout_seconds=int(value("ROXCHAOS_TIMEOUT_SECONDS", "900")),
             keep_stack=value("ROXCHAOS_KEEP_STACK", "0").lower()
             in {"1", "true", "yes"},
             database_name=value("ROXCHAOS_DB_NAME", "roxchaos_development"),
@@ -98,6 +100,8 @@ class Settings:
             raise ValueError("ROXCHAOS_DB_NAME must start with 'roxchaos_'")
         if not self.queue_database_name.startswith("roxchaos_"):
             raise ValueError("ROXCHAOS_QUEUE_DB_NAME must start with 'roxchaos_'")
+        if self.input_rows < 2:
+            raise ValueError("ROXCHAOS_INPUT_ROWS must be at least 2")
         if not (
             self.project_name == "roxchaos"
             or self.project_name.startswith("roxchaos-")

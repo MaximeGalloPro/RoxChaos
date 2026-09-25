@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'digest'
 
 module RoxChaosSnapshotRuns
   extend self
@@ -52,6 +53,7 @@ module RoxChaosSnapshotRuns
 
   def snapshot_run(workflow_run, organization)
     list = workflow_run.list
+    async_process_task = AsyncProcessTask.unscoped.find_by(id: workflow_run.async_process_task_id)
     items = WorkflowRunItem.where(workflow_run_id: workflow_run.id).includes(:task).order(:id).to_a
     external_jobs = ExternalJob.where(workflow_run_item_id: items.map(&:id)).order(:id).to_a
     task_ids = list ? list.tasks.pluck(:id) : items.map(&:task_id).uniq
@@ -70,6 +72,7 @@ module RoxChaosSnapshotRuns
       'list' => list && { 'id' => list.id, 'name' => list.name },
       'theme' => workflow_run.theme && { 'id' => workflow_run.theme.id, 'name' => workflow_run.theme.name },
       'async_process_task_id' => workflow_run.async_process_task_id,
+      'async_schedule' => serialize_async_schedule(async_process_task),
       'trigger_type' => workflow_run.trigger_type,
       'status' => workflow_run.status,
       'expected_items_count' => workflow_run.expected_items_count,
@@ -166,7 +169,18 @@ module RoxChaosSnapshotRuns
   end
 
   def serialize_analysis(analysis)
-    analysis.attributes.slice('id', 'run_id', 'task_list_id', 'reference', 'is_audit', 'created_at')
+    analysis.attributes.slice('id', 'run_id', 'task_list_id', 'reference', 'is_audit', 'created_at').merge(
+      'unique_id_sha256' => analysis.unique_id.nil? ? nil : Digest::SHA256.hexdigest(analysis.unique_id.to_s)
+    )
+  end
+
+  def serialize_async_schedule(async_process_task)
+    return unless async_process_task
+
+    async_process_task.attributes.slice(
+      'id', 'active', 'running', 'last_run_at', 'next_run_at',
+      'recurrence_type', 'recurrence_days', 'scheduled_time'
+    )
   end
 
   def serialize_reference_tag(tag)

@@ -45,9 +45,9 @@ services:
     build:
       context: ../RoxTune
       dockerfile: roxinfer/Dockerfile
-    command: ["python", "-c", "from rox_inference_worker import RoxInferenceWorker; RoxInferenceWorker().start()"]
     environment:
       TZ: Europe/Paris
+      INSTANCE_SUFFIX: roxchaos
       MODEL_PATH: /app/models
       REDIS_HOST: roxapi-redis
       REDIS_PORT: 6379
@@ -57,11 +57,42 @@ services:
       JOB_RETENTION_SECONDS: 604800
       USE_CUDA: "false"
       DRY_RUN: "true"
-      DRY_RUN_SLEEP_TIME: 5
+      DRY_RUN_SLEEP_TIME: ${ROXCHAOS_INFERENCE_SLEEP_SECONDS:-5}
       MOCK_RESPONSE_COMPLIANT: "true"
       MOCK_ERROR: "false"
+      LOCK_PATH: /app/config/worker.lock
     volumes:
       - worker_models:/app/models
+      - worker_config:/app/config
+    depends_on:
+      roxapi-redis:
+        condition: service_healthy
+    stop_grace_period: 2s
+
+  roxtrain-worker:
+    build:
+      context: ../RoxTune
+      dockerfile: roxtrain/Dockerfile
+    environment:
+      TZ: Europe/Paris
+      INSTANCE_SUFFIX: roxchaos
+      MODEL_PATH: /app/models
+      DATASET_PATH: /app/datasets
+      API_URL: http://roxapi:8080
+      REDIS_HOST: roxapi-redis
+      REDIS_PORT: 6379
+      REDIS_PASS: ""
+      JOB_RECLAIM_IDLE_MS: 2000
+      JOB_LEASE_RENEWAL_SECONDS: 1
+      JOB_RETENTION_SECONDS: 604800
+      TRAINING_ATTEMPT_RETENTION_SECONDS: 86400
+      USE_CUDA: "false"
+      DRY_RUN: "true"
+      LOCK_PATH: /app/config/worker.lock
+    volumes:
+      - worker_models:/app/models
+      - worker_datasets:/app/datasets
+      - worker_config:/app/config
     depends_on:
       roxapi-redis:
         condition: service_healthy
@@ -128,3 +159,5 @@ volumes:
   roxapi_redis_data:
   roxia_redis_data:
   worker_models:
+  worker_datasets:
+  worker_config:
