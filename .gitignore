@@ -1,0 +1,11 @@
+.env
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+manifests/*.local.json
+reports/*
+!reports/.gitkeep
+runtime/*
+!runtime/.gitkeep

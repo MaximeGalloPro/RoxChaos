@@ -1,0 +1,130 @@
+name: ${ROXCHAOS_PROJECT_NAME:-roxchaos}
+
+x-roxia-environment: &roxia-environment
+  RAILS_ENV: development
+  PROJECT_NAME: roxchaos
+  DB_NAME: ${ROXCHAOS_DB_NAME:-roxchaos_development}
+  SOLID_QUEUE_DATABASE_NAME: ${ROXCHAOS_QUEUE_DB_NAME:-roxchaos_development_queue}
+  DATABASE_HOST: ${DATABASE_HOST:-host.docker.internal}
+  DATABASE_PORT: ${DATABASE_PORT:-3307}
+  DATABASE_USERNAME: ${DATABASE_USERNAME:-mariadb}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:-mariadb}
+  SECRET_KEY_BASE: roxchaos-development-key
+  REDIS_URL: redis://roxia-redis:6379/0
+  ROXAPI_URL: http://roxapi:8080
+  PREPROD: "false"
+
+services:
+  roxapi-redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - roxapi_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  roxapi:
+    build:
+      context: ../RoxAPI
+      dockerfile: Dockerfile
+    environment:
+      REDIS_HOST: roxapi-redis
+      REDIS_PORT: 6379
+      REDIS_PASS: ""
+      SCHEDULE_PATH: /app/config/schedule.json
+    ports:
+      - "127.0.0.1:${ROXCHAOS_API_PORT:-8180}:8080"
+    depends_on:
+      roxapi-redis:
+        condition: service_healthy
+
+  roxinfer-worker:
+    build:
+      context: ../RoxTune
+      dockerfile: roxinfer/Dockerfile
+    command: ["python", "-c", "from rox_inference_worker import RoxInferenceWorker; RoxInferenceWorker().start()"]
+    environment:
+      TZ: Europe/Paris
+      MODEL_PATH: /app/models
+      REDIS_HOST: roxapi-redis
+      REDIS_PORT: 6379
+      REDIS_PASS: ""
+      JOB_RECLAIM_IDLE_MS: 2000
+      JOB_LEASE_RENEWAL_SECONDS: 1
+      JOB_RETENTION_SECONDS: 604800
+      USE_CUDA: "false"
+      DRY_RUN: "true"
+      DRY_RUN_SLEEP_TIME: 5
+      MOCK_RESPONSE_COMPLIANT: "true"
+      MOCK_ERROR: "false"
+    volumes:
+      - worker_models:/app/models
+    depends_on:
+      roxapi-redis:
+        condition: service_healthy
+    stop_grace_period: 2s
+
+  roxia-redis:
+    image: redis:7-alpine
+    volumes:
+      - roxia_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  web:
+    build:
+      context: ../RoxIA
+      dockerfile: Dockerfile
+    command: >-
+      sh -c 'rm -f /app/tmp/pids/server.pid &&
+      bin/rails db:create &&
+      bin/rails db:prepare:all &&
+      bin/rails server -p 3000 -b 0.0.0.0'
+    environment: *roxia-environment
+    ports:
+      - "127.0.0.1:${ROXCHAOS_ROXIA_PORT:-3180}:3000"
+    volumes:
+      - ./runtime/documents:/app/documents:ro
+    depends_on:
+      roxia-redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "bin/web-healthcheck"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  jobs:
+    build:
+      context: ../RoxIA
+      dockerfile: Dockerfile
+    command: bin/jobs
+    environment: *roxia-environment
+    volumes:
+      - ./runtime/documents:/app/documents:ro
+    depends_on:
+      web:
+        condition: service_healthy
+      roxia-redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "bin/jobs-healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    stop_grace_period: 2s
+
+volumes:
+  roxapi_redis_data:
+  roxia_redis_data:
+  worker_models:
